@@ -1,0 +1,31 @@
+{
+  "name": "@modelcontextprotocol/server-airbnb",
+  "version": "0.1.0",
+  "description": "MCP server for Airbnb search and listing details",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "mcp-server-airbnb": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').chmodSync('dist/index.js', '755')\"",
+    "prepare": "npm run build",
+    "watch": "tsc --watch"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.1",
+    "@types/node-fetch": "^2.6.12",
+    "cheerio": "^1.0.0",
+    "node-fetch": "^3.3.2",
+    "robots-parser": "^3.0.1",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.9",
+    "shx": "^0.3.4",
+    "typescript": "^5.8.2"
+  }
+}
