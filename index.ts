@@ -13,20 +13,6 @@ import fetch from "node-fetch";
 import * as cheerio from "cheerio";
 // We'll implement a simple robots.txt parser ourselves
 
-// Interfaces for Airbnb data
-interface AirbnbSearchResult {
-  id: string;
-  name: string;
-  url: string;
-  type: string;
-  location: string;
-  price: string;
-  rating?: string;
-  reviewCount?: string;
-  superhost: boolean;
-  amenities: string[];
-  imageUrl?: string;
-}
 
 interface AirbnbListingDetails {
   id: string;
@@ -114,6 +100,10 @@ const AIRBNB_SEARCH_TOOL: Tool = {
       roomType: {
         type: "string",
         description: "Type of place (entire home, private room, etc.)"
+      },
+      cursor: {
+        type: "string",
+        description: "Base64-encoded string used for Pagination"
       }
     },
     required: ["location"]
@@ -165,7 +155,7 @@ const AIRBNB_TOOLS = [
 ] as const;
 
 // Utility functions
-const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
+const USER_AGENT = "ModelContextProtocol/1.0 (Autonomous; +https://github.com/modelcontextprotocol/servers)";
 const BASE_URL = "https://www.airbnb.com";
 let robotsTxtContent = "";
 
@@ -225,6 +215,68 @@ async function fetchWithUserAgent(url: string) {
   });
 }
 
+function cleanObject(obj: any) {
+  Object.keys(obj).forEach(key => {
+    if (!obj[key] || key === "__typename") {
+      delete obj[key];
+    } else if (typeof obj[key] === "object") {
+      cleanObject(obj[key]);
+    }
+  });
+}
+
+function pickBySchema(obj: any, schema: any): any {
+  if (typeof obj !== 'object' || obj === null) return obj;
+  
+  // If the object is an array, process each item
+  if (Array.isArray(obj)) {
+    return obj.map(item => pickBySchema(item, schema));
+  }
+  
+  const result: Record<string, any> = {};
+  for (const key in schema) {
+    if (Object.prototype.hasOwnProperty.call(obj, key)) {
+      const rule = schema[key];
+      // If the rule is true, copy the value as-is
+      if (rule === true) {
+        result[key] = obj[key];
+      }
+      // If the rule is an object, apply the schema recursively
+      else if (typeof rule === 'object' && rule !== null) {
+        result[key] = pickBySchema(obj[key], rule);
+      }
+    }
+  }
+  return result;
+}
+
+function flattenArraysInObject(input: any, inArray: boolean = false): any {
+  if (Array.isArray(input)) {
+    // Process each item in the array with inArray=true so that any object
+    // inside the array is flattened to a string.
+    const flatItems = input.map(item => flattenArraysInObject(item, true));
+    return flatItems.join(', ');
+  } else if (typeof input === 'object' && input !== null) {
+    if (inArray) {
+      // When inside an array, ignore the keys and flatten the object's values.
+      const values = Object.values(input).map(value => flattenArraysInObject(value, true));
+      return values.join(', ');
+    } else {
+      // When not in an array, process each property recursively.
+      const result: Record<string, any> = {};
+      for (const key in input) {
+        if (Object.prototype.hasOwnProperty.call(input, key)) {
+          result[key] = flattenArraysInObject(input[key], false);
+        }
+      }
+      return result;
+    }
+  } else {
+    // For primitives, simply return the value.
+    return input;
+  }
+}
+
 // API handlers
 async function handleAirbnbSearch(params: any) {
   const {
@@ -238,6 +290,7 @@ async function handleAirbnbSearch(params: any) {
     minPrice,
     maxPrice,
     roomType,
+    cursor,
   } = params;
 
   // Build search URL
@@ -271,6 +324,11 @@ async function handleAirbnbSearch(params: any) {
     searchUrl.searchParams.append("room_types[]", roomTypeParam);
   }
 
+  // Add cursor for pagination
+  if (cursor) {
+    searchUrl.searchParams.append("cursor", cursor);
+  }
+
   // Check if path is allowed by robots.txt
   const path = searchUrl.pathname + searchUrl.search;
   if (!isPathAllowed(path)) {
@@ -291,93 +349,27 @@ async function handleAirbnbSearch(params: any) {
     const html = await response.text();
     const $ = cheerio.load(html);
     
-    // Extract search results
-    const listings: AirbnbSearchResult[] = [];
+    let staysSearchResults = {};
     
-    // Find listing cards
-    $('div[data-testid="card-container"]').each((i, element) => {
-      const listing: AirbnbSearchResult = {
-        id: "",
-        name: "",
-        url: "",
-        type: "",
-        location: "",
-        price: "",
-        superhost: false,
-        amenities: []
-      };
-      
-      // Extract listing ID and URL
-      const linkElement = $(element).find('a[data-testid="card-link"]');
-      const href = linkElement.attr('href');
-      if (href) {
-        listing.url = href.startsWith('/') ? `${BASE_URL}${href}` : href;
-        // Extract ID from URL
-        const idMatch = href.match(/\/rooms\/(\d+)/);
-        if (idMatch && idMatch[1]) {
-          listing.id = idMatch[1];
-        }
+    try {
+      const scriptElement = $("#data-deferred-state-0").first();
+      const clientData = JSON.parse($(scriptElement).text()).niobeMinimalClientData[0][1];
+      const results = clientData.data.presentation.staysSearch.results;
+      cleanObject(results);
+      staysSearchResults = {
+        searchResults: results.searchResults,
+        paginationInfo: results.paginationInfo
       }
-      
-      // Extract listing name
-      const titleElement = $(element).find('div[data-testid="listing-card-title"]');
-      listing.name = titleElement.text().trim();
-      
-      // Extract listing type and location
-      const subtitleElement = $(element).find('span[data-testid="listing-card-subtitle"]');
-      const subtitleText = subtitleElement.text().trim();
-      const subtitleParts = subtitleText.split(' in ');
-      if (subtitleParts.length >= 2) {
-        listing.type = subtitleParts[0].trim();
-        listing.location = subtitleParts[1].trim();
-      } else {
-        listing.type = subtitleText;
-      }
-      
-      // Extract price
-      const priceElement = $(element).find('span[data-testid="price-element"]');
-      listing.price = priceElement.text().trim();
-      
-      // Extract rating and review count
-      const reviewElement = $(element).find('span[data-testid="listing-card-rating"]');
-      const reviewText = reviewElement.text().trim();
-      const ratingMatch = reviewText.match(/([\d.]+)/);
-      if (ratingMatch) {
-        listing.rating = ratingMatch[1];
-        const reviewCountMatch = reviewText.match(/\((\d+)\)/);
-        if (reviewCountMatch) {
-          listing.reviewCount = reviewCountMatch[1];
-        }
-      }
-      
-      // Check if superhost
-      const superhostElement = $(element).find('div:contains("Superhost")');
-      listing.superhost = superhostElement.length > 0;
-      
-      // Extract image URL
-      const imgElement = $(element).find('img');
-      if (imgElement.length > 0) {
-        listing.imageUrl = imgElement.attr('src');
-      }
-      
-      // Extract amenities
-      const amenitiesElement = $(element).find('div[data-testid="listing-card-amenities"]');
-      amenitiesElement.find('span').each((i, amenityElement) => {
-        const amenity = $(amenityElement).text().trim();
-        if (amenity) {
-          listing.amenities.push(amenity);
-        }
-      });
-      
-      listings.push(listing);
-    });
+    } catch (e) {
+        console.error(e);
+    }
 
     return {
       content: [{
         type: "text",
         text: JSON.stringify({
           searchUrl: searchUrl.toString(),
-          results: listings
+          ...staysSearchResults
         }, null, 2)
       }],
       isError: false
@@ -443,155 +435,66 @@ async function handleAirbnbListingDetails(params: any) {
     };
   }
 
+  const allowSectionSchema: Record<string, any> = {
+    "LOCATION_DEFAULT": {
+      lat: true,
+      lng: true,
+      subtitle: true,
+      title: true
+    },
+    "POLICIES_DEFAULT": {
+      title: true,
+      houseRulesSections: {
+        title: true,
+        items : {
+          title: true
+        }
+      }
+    },
+    "HIGHLIGHTS_DEFAULT": {
+      highlights: {
+        title: true
+      }
+    },
+    "DESCRIPTION_DEFAULT": {
+      htmlDescription: {
+        htmlText: true
+      }
+    },
+    "AMENITIES_DEFAULT": {
+      title: true,
+      seeAllAmenitiesGroups: {
+        title: true,
+        amenities: {
+          title: true
+        }
+      }
+    },
+    //"AVAILABLITY_CALENDAR_DEFAULT": true,
+  };
+
   try {
     const response = await fetchWithUserAgent(listingUrl.toString());
     const html = await response.text();
     const $ = cheerio.load(html);
     
-    // Extract listing details
-    const listing: AirbnbListingDetails = {
-      id,
-      name: "",
-      description: "",
-      host: {
-        name: "",
-        isSuperhost: false
-      },
-      location: {
-        address: ""
-      },
-      details: {
-        guests: "",
-        bedrooms: "",
-        beds: "",
-        baths: ""
-      },
-      amenities: [],
-      pricing: {
-        basePrice: ""
-      }
-    };
+    let details = {};
     
-    // Extract listing name
-    const titleElement = $('h1[data-testid="listing-title"]');
-    listing.name = titleElement.text().trim();
-    
-    // Extract description
-    const descriptionElement = $('div[data-testid="listing-description"]');
-    listing.description = descriptionElement.text().trim();
-    
-    // Extract host information
-    const hostNameElement = $('div[data-testid="host-name"]');
-    listing.host.name = hostNameElement.text().trim().replace('Hosted by ', '');
-    
-    const superhostElement = $('div:contains("Superhost")');
-    listing.host.isSuperhost = superhostElement.length > 0;
-    
-    const hostJoinDateElement = $('div:contains("Joined in")');
-    if (hostJoinDateElement.length > 0) {
-      listing.host.joinDate = hostJoinDateElement.text().trim();
-    }
-    
-    // Extract location
-    const addressElement = $('div[data-testid="listing-address"]');
-    listing.location.address = addressElement.text().trim();
-    
-    // Try to extract coordinates from any map links or data attributes
-    const mapElement = $('[data-lat][data-lng]');
-    if (mapElement.length > 0) {
-      const lat = mapElement.attr('data-lat');
-      const lng = mapElement.attr('data-lng');
-      if (lat && lng) {
-        listing.location.coordinates = {
-          latitude: parseFloat(lat),
-          longitude: parseFloat(lng)
-        };
-      }
-    }
-    
-    // Extract details (guests, bedrooms, etc.)
-    const detailsElement = $('div[data-testid="listing-details"]');
-    const detailsText = detailsElement.text().trim();
-    
-    const guestsMatch = detailsText.match(/(\d+)\s+guests?/i);
-    if (guestsMatch) listing.details.guests = guestsMatch[1];
-    
-    const bedroomsMatch = detailsText.match(/(\d+)\s+bedrooms?/i);
-    if (bedroomsMatch) listing.details.bedrooms = bedroomsMatch[1];
-    
-    const bedsMatch = detailsText.match(/(\d+)\s+beds?/i);
-    if (bedsMatch) listing.details.beds = bedsMatch[1];
-    
-    const bathsMatch = detailsText.match(/([\d.]+)\s+baths?/i);
-    if (bathsMatch) listing.details.baths = bathsMatch[1];
-    
-    // Extract amenities
-    const amenitiesSection = $('div[data-testid="listing-amenities-section"]');
-    amenitiesSection.find('div[data-testid="amenity-row"]').each((i, element) => {
-      const amenity = $(element).text().trim();
-      if (amenity) {
-        listing.amenities.push(amenity);
-      }
-    });
-    
-    // Extract pricing
-    const priceElement = $('div[data-testid="price-element"]');
-    listing.pricing.basePrice = priceElement.text().trim();
-    
-    const cleaningFeeElement = $('div:contains("Cleaning fee")').next();
-    if (cleaningFeeElement.length > 0) {
-      listing.pricing.cleaningFee = cleaningFeeElement.text().trim();
-    }
-    
-    const serviceFeeElement = $('div:contains("Service fee")').next();
-    if (serviceFeeElement.length > 0) {
-      listing.pricing.serviceFee = serviceFeeElement.text().trim();
-    }
-    
-    const totalElement = $('div:contains("Total")').next();
-    if (totalElement.length > 0) {
-      listing.pricing.total = totalElement.text().trim();
-    }
-    
-    // Extract reviews
-    const ratingElement = $('div[data-testid="rating"]');
-    const reviewCountElement = $('div[data-testid="reviews-count"]');
-    
-    if (ratingElement.length > 0 && reviewCountElement.length > 0) {
-      const rating = ratingElement.text().trim();
-      const count = reviewCountElement.text().trim().replace(/\D/g, '');
-      
-      listing.reviews = {
-        rating,
-        count,
-        highlights: []
-      };
-      
-      // Extract review highlights
-      $('div[data-testid="review-highlight"]').each((i, element) => {
-        const highlight = $(element).text().trim();
-        if (highlight && listing.reviews) {
-          listing.reviews.highlights.push(highlight);
-        }
-      });
-    }
-    
-    // Extract house rules
-    const rulesSection = $('div:contains("House rules")').parent();
-    if (rulesSection.length > 0) {
-      listing.rules = [];
-      rulesSection.find('div[role="listitem"]').each((i, element) => {
-        const rule = $(element).text().trim();
-        if (rule && listing.rules) {
-          listing.rules.push(rule);
-        }
-      });
-    }
-    
-    // Extract cancellation policy
-    const cancellationElement = $('div[data-testid="cancellation-policy"]');
-    if (cancellationElement.length > 0) {
-      listing.cancellationPolicy = cancellationElement.text().trim();
+    try {
+      const scriptElement = $("#data-deferred-state-0").first();
+      const clientData = JSON.parse($(scriptElement).text()).niobeMinimalClientData[0][1];
+      const sections = clientData.data.presentation.stayProductDetailPage.sections.sections;
+      sections.forEach((section: any) => cleanObject(section));
+      details = sections
+        .filter((section: any) => allowSectionSchema.hasOwnProperty(section.sectionId))
+        .map((section: any) => {
+          return {
+            id: section.sectionId,
+            ...flattenArraysInObject(pickBySchema(section.section, allowSectionSchema[section.sectionId]))
+          }
+        });
+    } catch (e) {
+        console.error(e);
     }
 
     return {
@@ -599,7 +502,7 @@ async function handleAirbnbListingDetails(params: any) {
         type: "text",
         text: JSON.stringify({
           listingUrl: listingUrl.toString(),
-          details: listing
+          details: details
         }, null, 2)
       }],
       isError: false
