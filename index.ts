@@ -12,18 +12,22 @@ import {
 import fetch from "node-fetch";
 import * as cheerio from "cheerio";
 import { cleanObject, flattenArraysInObject, pickBySchema } from "./util.js";
-// We'll implement a simple robots.txt parser ourselves
+import robotsParser from "robots-parser";
 
 // Tool definitions
 const AIRBNB_SEARCH_TOOL: Tool = {
   name: "airbnb_search",
-  description: "Search for Airbnb listings",
+  description: "Search for Airbnb listings with various filters and pagination. Provide direct links to the user",
   inputSchema: {
     type: "object",
     properties: {
       location: {
         type: "string",
-        description: "Location to search for (city, address, etc.)"
+        description: "Location to search for (city, state, etc.)"
+      },
+      placeId: {
+        type: "string",
+        description: "Google Maps Place ID (overrides the location parameter)"
       },
       checkin: {
         type: "string",
@@ -60,6 +64,10 @@ const AIRBNB_SEARCH_TOOL: Tool = {
       cursor: {
         type: "string",
         description: "Base64-encoded string used for Pagination"
+      },
+      ignoreRobotsText: {
+        type: "boolean",
+        description: "Ignore robots.txt rules for this request"
       }
     },
     required: ["location"]
@@ -68,7 +76,7 @@ const AIRBNB_SEARCH_TOOL: Tool = {
 
 const AIRBNB_LISTING_DETAILS_TOOL: Tool = {
   name: "airbnb_listing_details",
-  description: "Get detailed information about a specific Airbnb listing",
+  description: "Get detailed information about a specific Airbnb listing. Provide direct links to the user",
   inputSchema: {
     type: "object",
     properties: {
@@ -99,6 +107,10 @@ const AIRBNB_LISTING_DETAILS_TOOL: Tool = {
       pets: {
         type: "number",
         description: "Number of pets"
+      },
+      ignoreRobotsText: {
+        type: "boolean",
+        description: "Ignore robots.txt rules for this request"
       }
     },
     required: ["id"]
@@ -113,12 +125,21 @@ const AIRBNB_TOOLS = [
 // Utility functions
 const USER_AGENT = "ModelContextProtocol/1.0 (Autonomous; +https://github.com/modelcontextprotocol/servers)";
 const BASE_URL = "https://www.airbnb.com";
+
+const args = process.argv.slice(2);
+const IGNORE_ROBOTS_TXT = args.includes("--ignore-robots-txt");
+
+const robotsErrorMessage = "This path is disallowed by Airbnb's robots.txt to this User-agent. You may or may not want to run the server with '--ignore-robots-txt' args"
 let robotsTxtContent = "";
 
-// Simple robots.txt parser
+// Simple robots.txt fetch
 async function fetchRobotsTxt() {
+  if (IGNORE_ROBOTS_TXT) {
+    return;
+  }
+
   try {
-    const response = await fetch(`${BASE_URL}/robots.txt`);
+    const response = await fetchWithUserAgent(`${BASE_URL}/robots.txt`);
     robotsTxtContent = await response.text();
   } catch (error) {
     console.error("Error fetching robots.txt:", error);
@@ -126,37 +147,15 @@ async function fetchRobotsTxt() {
   }
 }
 
-function isPathAllowed(path: string) {
+function isPathAllowed(path: string) {  
   if (!robotsTxtContent) {
     return true; // If we couldn't fetch robots.txt, assume allowed
   }
-  
-  // Simple robots.txt parsing
-  const lines = robotsTxtContent.split('\n');
-  let userAgentSection = false;
-  
-  for (const line of lines) {
-    const trimmedLine = line.trim();
-    
-    // Skip comments and empty lines
-    if (trimmedLine.startsWith('#') || trimmedLine === '') {
-      continue;
-    }
-    
-    // Check if we're in the right user-agent section
-    if (trimmedLine.toLowerCase().startsWith('user-agent:')) {
-      const agent = trimmedLine.substring(11).trim();
-      userAgentSection = agent === '*' || USER_AGENT.includes(agent);
-      continue;
-    }
-    
-    // If we're in the right section, check for disallow rules
-    if (userAgentSection && trimmedLine.toLowerCase().startsWith('disallow:')) {
-      const disallowedPath = trimmedLine.substring(9).trim();
-      if (disallowedPath && path.startsWith(disallowedPath)) {
-        return false;
-      }
-    }
+
+  const robots = robotsParser(path, robotsTxtContent);
+  if (!robots.isAllowed(path, USER_AGENT)) {
+    console.error(robotsErrorMessage);
+    return false;
   }
   
   return true;
@@ -175,6 +174,7 @@ async function fetchWithUserAgent(url: string) {
 async function handleAirbnbSearch(params: any) {
   const {
     location,
+    placeId,
     checkin,
     checkout,
     adults = 1,
@@ -184,10 +184,14 @@ async function handleAirbnbSearch(params: any) {
     minPrice,
     maxPrice,
     cursor,
+    ignoreRobotsText = false,
   } = params;
 
   // Build search URL
   const searchUrl = new URL(`${BASE_URL}/s/${encodeURIComponent(location)}/homes`);
+  
+  // Add placeId
+  if (placeId) searchUrl.searchParams.append("place_id", placeId);
   
   // Add query parameters
   if (checkin) searchUrl.searchParams.append("checkin", checkin);
@@ -224,12 +228,12 @@ async function handleAirbnbSearch(params: any) {
 
   // Check if path is allowed by robots.txt
   const path = searchUrl.pathname + searchUrl.search;
-  if (!isPathAllowed(path)) {
+  if (!ignoreRobotsText && !isPathAllowed(path)) {
     return {
       content: [{
         type: "text",
         text: JSON.stringify({
-          error: "This path is disallowed by Airbnb's robots.txt",
+          error: robotsErrorMessage,
           url: searchUrl.toString()
         }, null, 2)
       }],
@@ -277,9 +281,9 @@ async function handleAirbnbSearch(params: any) {
         }
       }
     },
-    contextualPictures: {
-      picture: true
-    }
+    // contextualPictures: {
+    //   picture: true
+    // }
   };
 
   try {
@@ -296,7 +300,8 @@ async function handleAirbnbSearch(params: any) {
       cleanObject(results);
       staysSearchResults = {
         searchResults: results.searchResults
-          .map((result: any) => flattenArraysInObject(pickBySchema(result, allowSearchResultSchema))),
+          .map((result: any) => flattenArraysInObject(pickBySchema(result, allowSearchResultSchema)))
+          .map((result: any) => { return {url: `${BASE_URL}/rooms/${result.listing.id}`, ...result }}),
         paginationInfo: results.paginationInfo
       }
     } catch (e) {
@@ -335,7 +340,8 @@ async function handleAirbnbListingDetails(params: any) {
     adults = 1,
     children = 0,
     infants = 0,
-    pets = 0
+    pets = 0,
+    ignoreRobotsText = false,
   } = params;
 
   // Build listing URL
@@ -361,12 +367,12 @@ async function handleAirbnbListingDetails(params: any) {
 
   // Check if path is allowed by robots.txt
   const path = listingUrl.pathname + listingUrl.search;
-  if (!isPathAllowed(path)) {
+  if (!ignoreRobotsText && !isPathAllowed(path)) {
     return {
       content: [{
         type: "text",
         text: JSON.stringify({
-          error: "This path is disallowed by Airbnb's robots.txt",
+          error: robotsErrorMessage,
           url: listingUrl.toString()
         }, null, 2)
       }],
@@ -463,7 +469,7 @@ async function handleAirbnbListingDetails(params: any) {
 // Server setup
 const server = new Server(
   {
-    name: "mcp-server/airbnb",
+    name: "airbnb",
     version: "0.1.0",
   },
   {
@@ -471,6 +477,10 @@ const server = new Server(
       tools: {},
     },
   },
+);
+
+console.error(
+  `Server started with options: ${IGNORE_ROBOTS_TXT ? "ignore-robots-txt" : "respect-robots-txt"}`
 );
 
 // Set up request handlers
