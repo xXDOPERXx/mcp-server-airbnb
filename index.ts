@@ -11,48 +11,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import fetch from "node-fetch";
 import * as cheerio from "cheerio";
+import { cleanObject, flattenArraysInObject, pickBySchema } from "./util.js";
 // We'll implement a simple robots.txt parser ourselves
-
-
-interface AirbnbListingDetails {
-  id: string;
-  name: string;
-  description: string;
-  host: {
-    name: string;
-    isSuperhost: boolean;
-    joinDate?: string;
-    profileUrl?: string;
-  };
-  location: {
-    address: string;
-    coordinates?: {
-      latitude?: number;
-      longitude?: number;
-    };
-  };
-  details: {
-    guests: string;
-    bedrooms: string;
-    beds: string;
-    baths: string;
-  };
-  amenities: string[];
-  pricing: {
-    basePrice: string;
-    cleaningFee?: string;
-    serviceFee?: string;
-    total?: string;
-  };
-  availability?: string[];
-  reviews?: {
-    rating: string;
-    count: string;
-    highlights: string[];
-  };
-  rules?: string[];
-  cancellationPolicy?: string;
-}
 
 // Tool definitions
 const AIRBNB_SEARCH_TOOL: Tool = {
@@ -91,15 +51,11 @@ const AIRBNB_SEARCH_TOOL: Tool = {
       },
       minPrice: {
         type: "number",
-        description: "Minimum price per night"
+        description: "Minimum price for the stay"
       },
       maxPrice: {
         type: "number",
-        description: "Maximum price per night"
-      },
-      roomType: {
-        type: "string",
-        description: "Type of place (entire home, private room, etc.)"
+        description: "Maximum price for the stay"
       },
       cursor: {
         type: "string",
@@ -215,68 +171,6 @@ async function fetchWithUserAgent(url: string) {
   });
 }
 
-function cleanObject(obj: any) {
-  Object.keys(obj).forEach(key => {
-    if (!obj[key] || key === "__typename") {
-      delete obj[key];
-    } else if (typeof obj[key] === "object") {
-      cleanObject(obj[key]);
-    }
-  });
-}
-
-function pickBySchema(obj: any, schema: any): any {
-  if (typeof obj !== 'object' || obj === null) return obj;
-  
-  // If the object is an array, process each item
-  if (Array.isArray(obj)) {
-    return obj.map(item => pickBySchema(item, schema));
-  }
-  
-  const result: Record<string, any> = {};
-  for (const key in schema) {
-    if (Object.prototype.hasOwnProperty.call(obj, key)) {
-      const rule = schema[key];
-      // If the rule is true, copy the value as-is
-      if (rule === true) {
-        result[key] = obj[key];
-      }
-      // If the rule is an object, apply the schema recursively
-      else if (typeof rule === 'object' && rule !== null) {
-        result[key] = pickBySchema(obj[key], rule);
-      }
-    }
-  }
-  return result;
-}
-
-function flattenArraysInObject(input: any, inArray: boolean = false): any {
-  if (Array.isArray(input)) {
-    // Process each item in the array with inArray=true so that any object
-    // inside the array is flattened to a string.
-    const flatItems = input.map(item => flattenArraysInObject(item, true));
-    return flatItems.join(', ');
-  } else if (typeof input === 'object' && input !== null) {
-    if (inArray) {
-      // When inside an array, ignore the keys and flatten the object's values.
-      const values = Object.values(input).map(value => flattenArraysInObject(value, true));
-      return values.join(', ');
-    } else {
-      // When not in an array, process each property recursively.
-      const result: Record<string, any> = {};
-      for (const key in input) {
-        if (Object.prototype.hasOwnProperty.call(input, key)) {
-          result[key] = flattenArraysInObject(input[key], false);
-        }
-      }
-      return result;
-    }
-  } else {
-    // For primitives, simply return the value.
-    return input;
-  }
-}
-
 // API handlers
 async function handleAirbnbSearch(params: any) {
   const {
@@ -289,7 +183,6 @@ async function handleAirbnbSearch(params: any) {
     pets = 0,
     minPrice,
     maxPrice,
-    roomType,
     cursor,
   } = params;
 
@@ -319,10 +212,10 @@ async function handleAirbnbSearch(params: any) {
   if (maxPrice) searchUrl.searchParams.append("price_max", maxPrice.toString());
   
   // Add room type
-  if (roomType) {
-    const roomTypeParam = roomType.toLowerCase().replace(/\s+/g, '_');
-    searchUrl.searchParams.append("room_types[]", roomTypeParam);
-  }
+  // if (roomType) {
+  //   const roomTypeParam = roomType.toLowerCase().replace(/\s+/g, '_');
+  //   searchUrl.searchParams.append("room_types[]", roomTypeParam);
+  // }
 
   // Add cursor for pagination
   if (cursor) {
@@ -344,6 +237,51 @@ async function handleAirbnbSearch(params: any) {
     };
   }
 
+  const allowSearchResultSchema: Record<string, any> = {
+    listing : {
+      id: true,
+      name: true,
+      title: true,
+      coordinate: true,
+      structuredContent: {
+        mapCategoryInfo: {
+          body: true
+        },
+        mapSecondaryLine: {
+          body: true
+        },
+        primaryLine: {
+          body: true
+        },
+        secondaryLine: {
+          body: true
+        },
+      }
+    },
+    avgRatingA11yLabel: true,
+    listingParamOverrides: true,
+    structuredDisplayPrice: {
+      primaryLine: {
+        accessibilityLabel: true,
+      },
+      secondaryLine: {
+        accessibilityLabel: true,
+      },
+      explanationData: {
+        title: true,
+        priceDetails: {
+          items: {
+            description: true,
+            priceString: true
+          }
+        }
+      }
+    },
+    contextualPictures: {
+      picture: true
+    }
+  };
+
   try {
     const response = await fetchWithUserAgent(searchUrl.toString());
     const html = await response.text();
@@ -357,7 +295,8 @@ async function handleAirbnbSearch(params: any) {
       const results = clientData.data.presentation.staysSearch.results;
       cleanObject(results);
       staysSearchResults = {
-        searchResults: results.searchResults,
+        searchResults: results.searchResults
+          .map((result: any) => flattenArraysInObject(pickBySchema(result, allowSearchResultSchema))),
         paginationInfo: results.paginationInfo
       }
     } catch (e) {
@@ -403,8 +342,8 @@ async function handleAirbnbListingDetails(params: any) {
   const listingUrl = new URL(`${BASE_URL}/rooms/${id}`);
   
   // Add query parameters
-  if (checkin) listingUrl.searchParams.append("checkin", checkin);
-  if (checkout) listingUrl.searchParams.append("checkout", checkout);
+  if (checkin) listingUrl.searchParams.append("check_in", checkin);
+  if (checkout) listingUrl.searchParams.append("check_out", checkout);
   
   // Add guests
   const adults_int = parseInt(adults.toString());
