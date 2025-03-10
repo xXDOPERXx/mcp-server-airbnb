@@ -45,15 +45,8 @@ MCP Server for Airbnb search and listing details.
 
 ## Setup
 
-### Installing via Smithery
 
-To install mcp-server-airbnb for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@openbnb-org/mcp-server-airbnb):
-
-```bash
-npx -y @smithery/cli install @openbnb-org/mcp-server-airbnb --client claude
-```
-
-### Usage with Claude Desktop
+### Installing on Claude Desktop
 1. Go to: Settings > Developer > Edit Config
 
 2. Add the following to your `claude_desktop_config.json`:
@@ -89,6 +82,14 @@ To ignore robots.txt for all requests, use this version with `--ignore-robots-tx
 }
 ```
 3. Restart Claude Desktop and plan your next trip that include Airbnbs!
+
+### Other Option: Installing via Smithery
+
+To install mcp-server-airbnb for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@openbnb-org/mcp-server-airbnb):
+
+```bash
+npx -y @smithery/cli install @openbnb-org/mcp-server-airbnb --client claude
+```
 
 ## Build (for devs)
 
