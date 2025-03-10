@@ -1,7 +1,7 @@
 # Airbnb MCP Server
 [![smithery badge](https://smithery.ai/badge/@openbnb-org/mcp-server-airbnb)](https://smithery.ai/server/@openbnb-org/mcp-server-airbnb)
 
-MCP Server for Airbnb search and listing details.
+MCP Server for searching Airbnb and get listing details.
 
 ## Tools
 
@@ -47,6 +47,7 @@ MCP Server for Airbnb search and listing details.
 
 
 ### Installing on Claude Desktop
+Before starting make sure [Node.js](https://nodejs.org/) is installed on your desktop for `npx` to work.
 1. Go to: Settings > Developer > Edit Config
 
 2. Add the following to your `claude_desktop_config.json`:
@@ -105,4 +106,4 @@ This MCP server is licensed under the MIT License.
 ## Disclaimer
 
 Airbnb is a trademark of Airbnb, Inc.
-OpenBnB is not Not related to Airbnb, Inc. or its subsidiaries
+OpenBnB is not related to Airbnb, Inc. or its subsidiaries
