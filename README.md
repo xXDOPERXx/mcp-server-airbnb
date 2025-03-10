@@ -1,4 +1,5 @@
 # Airbnb MCP Server
+[![smithery badge](https://smithery.ai/badge/@openbnb-org/mcp-server-airbnb)](https://smithery.ai/server/@openbnb-org/mcp-server-airbnb)
 
 MCP Server for Airbnb search and listing details.
 
@@ -43,6 +44,14 @@ MCP Server for Airbnb search and listing details.
 - Reduces context load by flattening and picking data
 
 ## Setup
+
+### Installing via Smithery
+
+To install mcp-server-airbnb for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@openbnb-org/mcp-server-airbnb):
+
+```bash
+npx -y @smithery/cli install @openbnb-org/mcp-server-airbnb --client claude
+```
 
 ### Usage with Claude Desktop
 1. Go to: Settings > Developer > Edit Config
@@ -96,4 +105,3 @@ This MCP server is licensed under the MIT License.
 
 Airbnb is a trademark of Airbnb, Inc.
 OpenBnB is not Not related to Airbnb, Inc. or its subsidiaries
-
