@@ -242,25 +242,27 @@ async function handleAirbnbSearch(params: any) {
   }
 
   const allowSearchResultSchema: Record<string, any> = {
-    listing : {
+    demandStayListing : {
       id: true,
-      name: true,
-      title: true,
-      coordinate: true,
-      structuredContent: {
-        mapCategoryInfo: {
-          body: true
-        },
-        mapSecondaryLine: {
-          body: true
-        },
-        primaryLine: {
-          body: true
-        },
-        secondaryLine: {
-          body: true
-        },
-      }
+      description: true,
+      location: true,
+    },
+    badges: {
+      text: true,
+    },
+    structuredContent: {
+      mapCategoryInfo: {
+        body: true
+      },
+      mapSecondaryLine: {
+        body: true
+      },
+      primaryLine: {
+        body: true
+      },
+      secondaryLine: {
+        body: true
+      },
     },
     avgRatingA11yLabel: true,
     listingParamOverrides: true,
@@ -301,7 +303,10 @@ async function handleAirbnbSearch(params: any) {
       staysSearchResults = {
         searchResults: results.searchResults
           .map((result: any) => flattenArraysInObject(pickBySchema(result, allowSearchResultSchema)))
-          .map((result: any) => { return {url: `${BASE_URL}/rooms/${result.listing.id}`, ...result }}),
+          .map((result: any) => {
+            const id = atob(result.demandStayListing.id).split(":")[1];
+            return {id, url: `${BASE_URL}/rooms/${id}`, ...result }
+          }),
         paginationInfo: results.paginationInfo
       }
     } catch (e) {
