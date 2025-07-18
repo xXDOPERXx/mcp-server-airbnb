@@ -13,6 +13,24 @@ import fetch from "node-fetch";
 import * as cheerio from "cheerio";
 import { cleanObject, flattenArraysInObject, pickBySchema } from "./util.js";
 import robotsParser from "robots-parser";
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+// Get version from package.json
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+function getVersion(): string {
+  try {
+    const packageJson = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf8'));
+    return process.env.MCP_SERVER_VERSION || packageJson.version || "unknown";
+  } catch (error) {
+    return process.env.MCP_SERVER_VERSION || "unknown";
+  }
+}
+
+const VERSION = getVersion();
 
 // Tool definitions
 const AIRBNB_SEARCH_TOOL: Tool = {
@@ -611,7 +629,7 @@ async function handleAirbnbListingDetails(params: any) {
 const server = new Server(
   {
     name: "airbnb",
-    version: "0.1.0",
+    version: VERSION,
   },
   {
     capabilities: {
@@ -633,6 +651,7 @@ function log(level: 'info' | 'warn' | 'error', message: string, data?: any) {
 }
 
 log('info', 'Airbnb MCP Server starting', {
+  version: VERSION,
   ignoreRobotsTxt: IGNORE_ROBOTS_TXT,
   nodeVersion: process.version,
   platform: process.platform
@@ -727,7 +746,7 @@ async function runServer() {
     await server.connect(transport);
     
     log('info', 'Airbnb MCP Server running on stdio', {
-      version: '0.1.2',
+      version: VERSION,
       robotsRespected: !IGNORE_ROBOTS_TXT
     });
     

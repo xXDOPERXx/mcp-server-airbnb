@@ -17,12 +17,14 @@
     "mcp-server-airbnb": "dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "sync-version.js"
   ],
   "scripts": {
-    "build": "tsc && shx chmod +x dist/*.js",
+    "build": "node sync-version.js && tsc && shx chmod +x dist/*.js",
     "prepare": "npm run build",
-    "watch": "tsc --watch"
+    "watch": "tsc --watch",
+    "sync-version": "node sync-version.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.1",
