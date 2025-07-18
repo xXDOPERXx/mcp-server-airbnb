@@ -126,48 +126,103 @@ const AIRBNB_TOOLS = [
 const USER_AGENT = "ModelContextProtocol/1.0 (Autonomous; +https://github.com/modelcontextprotocol/servers)";
 const BASE_URL = "https://www.airbnb.com";
 
-const args = process.argv.slice(2);
-const IGNORE_ROBOTS_TXT = args.includes("--ignore-robots-txt");
+// Configuration from environment variables (set by DXT host)
+const IGNORE_ROBOTS_TXT = process.env.IGNORE_ROBOTS_TXT === "true" || process.argv.slice(2).includes("--ignore-robots-txt");
 
 const robotsErrorMessage = "This path is disallowed by Airbnb's robots.txt to this User-agent. You may or may not want to run the server with '--ignore-robots-txt' args"
 let robotsTxtContent = "";
 
-// Simple robots.txt fetch
+// Enhanced robots.txt fetch with timeout and error handling
 async function fetchRobotsTxt() {
   if (IGNORE_ROBOTS_TXT) {
+    log('info', 'Skipping robots.txt fetch (ignored by configuration)');
     return;
   }
 
   try {
-    const response = await fetchWithUserAgent(`${BASE_URL}/robots.txt`);
+    log('info', 'Fetching robots.txt from Airbnb');
+    
+    // Add timeout to prevent hanging
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    
+    const response = await fetch(`${BASE_URL}/robots.txt`, {
+      headers: {
+        "User-Agent": USER_AGENT,
+      },
+      signal: controller.signal
+    });
+    
+    clearTimeout(timeoutId);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
     robotsTxtContent = await response.text();
+    log('info', 'Successfully fetched robots.txt');
   } catch (error) {
-    console.error("Error fetching robots.txt:", error);
+    log('warn', 'Error fetching robots.txt, assuming all paths allowed', {
+      error: error instanceof Error ? error.message : String(error)
+    });
     robotsTxtContent = ""; // Empty robots.txt means everything is allowed
   }
 }
 
-function isPathAllowed(path: string) {  
+function isPathAllowed(path: string): boolean {  
   if (!robotsTxtContent) {
     return true; // If we couldn't fetch robots.txt, assume allowed
   }
 
-  const robots = robotsParser(path, robotsTxtContent);
-  if (!robots.isAllowed(path, USER_AGENT)) {
-    console.error(robotsErrorMessage);
-    return false;
+  try {
+    const robots = robotsParser(`${BASE_URL}/robots.txt`, robotsTxtContent);
+    const allowed = robots.isAllowed(path, USER_AGENT);
+    
+    if (!allowed) {
+      log('warn', 'Path disallowed by robots.txt', { path, userAgent: USER_AGENT });
+    }
+    
+    return allowed;
+  } catch (error) {
+    log('warn', 'Error parsing robots.txt, allowing path', {
+      path,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return true; // If parsing fails, be permissive
   }
-  
-  return true;
 }
 
-async function fetchWithUserAgent(url: string) {
-  return fetch(url, {
-    headers: {
-      "User-Agent": USER_AGENT,
-      "Accept-Language": "en-US,en;q=0.9",
-    },
-  });
+async function fetchWithUserAgent(url: string, timeout: number = 30000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+  
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": USER_AGENT,
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Cache-Control": "no-cache",
+      },
+      signal: controller.signal
+    });
+    
+    clearTimeout(timeoutId);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`Request timeout after ${timeout}ms`);
+    }
+    
+    throw error;
+  }
 }
 
 // API handlers
@@ -229,12 +284,14 @@ async function handleAirbnbSearch(params: any) {
   // Check if path is allowed by robots.txt
   const path = searchUrl.pathname + searchUrl.search;
   if (!ignoreRobotsText && !isPathAllowed(path)) {
+    log('warn', 'Search blocked by robots.txt', { path, url: searchUrl.toString() });
     return {
       content: [{
         type: "text",
         text: JSON.stringify({
           error: robotsErrorMessage,
-          url: searchUrl.toString()
+          url: searchUrl.toString(),
+          suggestion: "Consider enabling 'ignore_robots_txt' in extension settings if needed for testing"
         }, null, 2)
       }],
       isError: true
@@ -289,17 +346,29 @@ async function handleAirbnbSearch(params: any) {
   };
 
   try {
+    log('info', 'Performing Airbnb search', { location, checkin, checkout, adults, children });
+    
     const response = await fetchWithUserAgent(searchUrl.toString());
     const html = await response.text();
     const $ = cheerio.load(html);
     
-    let staysSearchResults = {};
+    let staysSearchResults: any = {};
     
     try {
       const scriptElement = $("#data-deferred-state-0").first();
-      const clientData = JSON.parse($(scriptElement).text()).niobeClientData[0][1];
+      if (scriptElement.length === 0) {
+        throw new Error("Could not find data script element - page structure may have changed");
+      }
+      
+      const scriptContent = $(scriptElement).text();
+      if (!scriptContent) {
+        throw new Error("Data script element is empty");
+      }
+      
+      const clientData = JSON.parse(scriptContent).niobeClientData[0][1];
       const results = clientData.data.presentation.staysSearch.results;
       cleanObject(results);
+      
       staysSearchResults = {
         searchResults: results.searchResults
           .map((result: any) => flattenArraysInObject(pickBySchema(result, allowSearchResultSchema)))
@@ -309,8 +378,27 @@ async function handleAirbnbSearch(params: any) {
           }),
         paginationInfo: results.paginationInfo
       }
-    } catch (e) {
-        console.error(e);
+      
+      log('info', 'Search completed successfully', { 
+        resultCount: staysSearchResults.searchResults?.length || 0 
+      });
+    } catch (parseError) {
+      log('error', 'Failed to parse search results', {
+        error: parseError instanceof Error ? parseError.message : String(parseError),
+        url: searchUrl.toString()
+      });
+      
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            error: "Failed to parse search results from Airbnb. The page structure may have changed.",
+            details: parseError instanceof Error ? parseError.message : String(parseError),
+            searchUrl: searchUrl.toString()
+          }, null, 2)
+        }],
+        isError: true
+      };
     }
 
     return {
@@ -324,12 +412,18 @@ async function handleAirbnbSearch(params: any) {
       isError: false
     };
   } catch (error) {
+    log('error', 'Search request failed', {
+      error: error instanceof Error ? error.message : String(error),
+      url: searchUrl.toString()
+    });
+    
     return {
       content: [{
         type: "text",
         text: JSON.stringify({
           error: error instanceof Error ? error.message : String(error),
-          searchUrl: searchUrl.toString()
+          searchUrl: searchUrl.toString(),
+          timestamp: new Date().toISOString()
         }, null, 2)
       }],
       isError: true
@@ -373,12 +467,14 @@ async function handleAirbnbListingDetails(params: any) {
   // Check if path is allowed by robots.txt
   const path = listingUrl.pathname + listingUrl.search;
   if (!ignoreRobotsText && !isPathAllowed(path)) {
+    log('warn', 'Listing details blocked by robots.txt', { path, url: listingUrl.toString() });
     return {
       content: [{
         type: "text",
         text: JSON.stringify({
           error: robotsErrorMessage,
-          url: listingUrl.toString()
+          url: listingUrl.toString(),
+          suggestion: "Consider enabling 'ignore_robots_txt' in extension settings if needed for testing"
         }, null, 2)
       }],
       isError: true
@@ -424,6 +520,8 @@ async function handleAirbnbListingDetails(params: any) {
   };
 
   try {
+    log('info', 'Fetching listing details', { id, checkin, checkout, adults, children });
+    
     const response = await fetchWithUserAgent(listingUrl.toString());
     const html = await response.text();
     const $ = cheerio.load(html);
@@ -432,9 +530,19 @@ async function handleAirbnbListingDetails(params: any) {
     
     try {
       const scriptElement = $("#data-deferred-state-0").first();
-      const clientData = JSON.parse($(scriptElement).text()).niobeClientData[0][1];
+      if (scriptElement.length === 0) {
+        throw new Error("Could not find data script element - page structure may have changed");
+      }
+      
+      const scriptContent = $(scriptElement).text();
+      if (!scriptContent) {
+        throw new Error("Data script element is empty");
+      }
+      
+      const clientData = JSON.parse(scriptContent).niobeClientData[0][1];
       const sections = clientData.data.presentation.stayProductDetailPage.sections.sections;
       sections.forEach((section: any) => cleanObject(section));
+      
       details = sections
         .filter((section: any) => allowSectionSchema.hasOwnProperty(section.sectionId))
         .map((section: any) => {
@@ -443,8 +551,29 @@ async function handleAirbnbListingDetails(params: any) {
             ...flattenArraysInObject(pickBySchema(section.section, allowSectionSchema[section.sectionId]))
           }
         });
-    } catch (e) {
-        console.error(e);
+        
+      log('info', 'Listing details fetched successfully', { 
+        id, 
+        sectionsFound: Array.isArray(details) ? details.length : 0 
+      });
+    } catch (parseError) {
+      log('error', 'Failed to parse listing details', {
+        error: parseError instanceof Error ? parseError.message : String(parseError),
+        id,
+        url: listingUrl.toString()
+      });
+      
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            error: "Failed to parse listing details from Airbnb. The page structure may have changed.",
+            details: parseError instanceof Error ? parseError.message : String(parseError),
+            listingUrl: listingUrl.toString()
+          }, null, 2)
+        }],
+        isError: true
+      };
     }
 
     return {
@@ -458,12 +587,19 @@ async function handleAirbnbListingDetails(params: any) {
       isError: false
     };
   } catch (error) {
+    log('error', 'Listing details request failed', {
+      error: error instanceof Error ? error.message : String(error),
+      id,
+      url: listingUrl.toString()
+    });
+    
     return {
       content: [{
         type: "text",
         text: JSON.stringify({
           error: error instanceof Error ? error.message : String(error),
-          listingUrl: listingUrl.toString()
+          listingUrl: listingUrl.toString(),
+          timestamp: new Date().toISOString()
         }, null, 2)
       }],
       isError: true
@@ -484,9 +620,23 @@ const server = new Server(
   },
 );
 
-console.error(
-  `Server started with options: ${IGNORE_ROBOTS_TXT ? "ignore-robots-txt" : "respect-robots-txt"}`
-);
+// Enhanced logging for DXT
+function log(level: 'info' | 'warn' | 'error', message: string, data?: any) {
+  const timestamp = new Date().toISOString();
+  const logMessage = `[${timestamp}] [${level.toUpperCase()}] ${message}`;
+  
+  if (data) {
+    console.error(`${logMessage}:`, JSON.stringify(data, null, 2));
+  } else {
+    console.error(logMessage);
+  }
+}
+
+log('info', 'Airbnb MCP Server starting', {
+  ignoreRobotsTxt: IGNORE_ROBOTS_TXT,
+  nodeVersion: process.version,
+  platform: process.platform
+});
 
 // Set up request handlers
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -494,19 +644,38 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const startTime = Date.now();
+  
   try {
+    // Validate request parameters
+    if (!request.params.name) {
+      throw new McpError(ErrorCode.InvalidParams, "Tool name is required");
+    }
+    
+    if (!request.params.arguments) {
+      throw new McpError(ErrorCode.InvalidParams, "Tool arguments are required");
+    }
+    
+    log('info', 'Tool call received', { 
+      tool: request.params.name,
+      arguments: request.params.arguments 
+    });
+    
     // Ensure robots.txt is loaded
-    if (!robotsTxtContent) {
+    if (!robotsTxtContent && !IGNORE_ROBOTS_TXT) {
       await fetchRobotsTxt();
     }
 
+    let result;
     switch (request.params.name) {
       case "airbnb_search": {
-        return await handleAirbnbSearch(request.params.arguments);
+        result = await handleAirbnbSearch(request.params.arguments);
+        break;
       }
 
       case "airbnb_listing_details": {
-        return await handleAirbnbListingDetails(request.params.arguments);
+        result = await handleAirbnbListingDetails(request.params.arguments);
+        break;
       }
 
       default:
@@ -515,11 +684,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           `Unknown tool: ${request.params.name}`
         );
     }
+    
+    const duration = Date.now() - startTime;
+    log('info', 'Tool call completed', { 
+      tool: request.params.name, 
+      duration: `${duration}ms`,
+      success: !result.isError 
+    });
+    
+    return result;
   } catch (error) {
+    const duration = Date.now() - startTime;
+    log('error', 'Tool call failed', {
+      tool: request.params.name,
+      duration: `${duration}ms`,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    
+    if (error instanceof McpError) {
+      throw error;
+    }
+    
     return {
       content: [{
         type: "text",
-        text: `Error: ${error instanceof Error ? error.message : String(error)}`
+        text: JSON.stringify({
+          error: error instanceof Error ? error.message : String(error),
+          timestamp: new Date().toISOString()
+        }, null, 2)
       }],
       isError: true
     };
@@ -527,12 +719,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 async function runServer() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("Airbnb MCP Server running on stdio");
+  try {
+    // Initialize robots.txt on startup
+    await fetchRobotsTxt();
+    
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    
+    log('info', 'Airbnb MCP Server running on stdio', {
+      version: '0.1.2',
+      robotsRespected: !IGNORE_ROBOTS_TXT
+    });
+    
+    // Graceful shutdown handling
+    process.on('SIGINT', () => {
+      log('info', 'Received SIGINT, shutting down gracefully');
+      process.exit(0);
+    });
+    
+    process.on('SIGTERM', () => {
+      log('info', 'Received SIGTERM, shutting down gracefully');
+      process.exit(0);
+    });
+    
+  } catch (error) {
+    log('error', 'Failed to start server', {
+      error: error instanceof Error ? error.message : String(error)
+    });
+    process.exit(1);
+  }
 }
 
 runServer().catch((error) => {
-  console.error("Fatal error running server:", error);
+  log('error', 'Fatal error running server', {
+    error: error instanceof Error ? error.message : String(error)
+  });
   process.exit(1);
 });

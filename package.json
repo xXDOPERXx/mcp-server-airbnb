@@ -6,9 +6,9 @@
   "type": "module",
   "author": "OpenBnB (https://openbnb.org)",
   "keywords": [
-		"mcp",
 		"airbnb",
-		"vacation rental"
+		"vacation rental",
+    "travel"
 	],
   "publishConfig": {
 		"access": "public"
