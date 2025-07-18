@@ -47,7 +47,7 @@ MCP Server for searching Airbnb and get listing details.
 
 
 ### Installing on Claude Desktop
-Before starting make sure [Node.js](https://nodejs.org/) is installed on your desktop for `npx` to work.
+Before starting make sure [Node.js](https://nodejs.org/) (>= v20) is installed on your desktop for `npx` to work.
 1. Go to: Settings > Developer > Edit Config
 
 2. Add the following to your `claude_desktop_config.json`:
