@@ -742,24 +742,142 @@ async function runServer() {
     // Initialize robots.txt on startup
     await fetchRobotsTxt();
     
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
+    // Check if HTTP mode is requested
+    const httpMode = process.argv.includes('--http') || process.env.MCP_HTTP_MODE === 'true';
+    const port = parseInt(process.env.MCP_PORT || '8003');
     
-    log('info', 'Airbnb MCP Server running on stdio', {
-      version: VERSION,
-      robotsRespected: !IGNORE_ROBOTS_TXT
-    });
-    
-    // Graceful shutdown handling
-    process.on('SIGINT', () => {
-      log('info', 'Received SIGINT, shutting down gracefully');
-      process.exit(0);
-    });
-    
-    process.on('SIGTERM', () => {
-      log('info', 'Received SIGTERM, shutting down gracefully');
-      process.exit(0);
-    });
+    if (httpMode) {
+      // HTTP transport using Express-like approach
+      const http = await import('http');
+      const url = await import('url');
+      
+      const server_instance = http.createServer(async (req, res) => {
+        const parsedUrl = url.parse(req.url || '', true);
+        
+        if (parsedUrl.pathname === '/mcp') {
+          // Set CORS headers
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+          res.setHeader('Content-Type', 'application/json');
+          
+          if (req.method === 'OPTIONS') {
+            res.writeHead(200);
+            res.end();
+            return;
+          }
+          
+          if (req.method === 'POST') {
+            let body = '';
+            req.on('data', chunk => {
+              body += chunk.toString();
+            });
+            
+            req.on('end', async () => {
+              try {
+                const request = JSON.parse(body);
+                
+                // Handle MCP requests
+                if (request.method === 'tools/list') {
+                  const response = {
+                    jsonrpc: '2.0',
+                    id: request.id,
+                    result: {
+                      tools: AIRBNB_TOOLS
+                    }
+                  };
+                  res.writeHead(200);
+                  res.end(JSON.stringify(response));
+                } else if (request.method === 'tools/call') {
+                  const { name, arguments: args } = request.params;
+                  let result;
+                  
+                  switch (name) {
+                    case 'airbnb_search':
+                      result = await handleAirbnbSearch(args);
+                      break;
+                    case 'airbnb_listing_details':
+                      result = await handleAirbnbListingDetails(args);
+                      break;
+                    default:
+                      result = {
+                        content: [{
+                          type: 'text',
+                          text: JSON.stringify({
+                            error: `Unknown tool: ${name}`
+                          })
+                        }],
+                        isError: true
+                      };
+                  }
+                  
+                  const response = {
+                    jsonrpc: '2.0',
+                    id: request.id,
+                    result: result
+                  };
+                  res.writeHead(200);
+                  res.end(JSON.stringify(response));
+                } else {
+                  res.writeHead(400);
+                  res.end(JSON.stringify({ error: 'Unknown method' }));
+                }
+              } catch (error) {
+                res.writeHead(500);
+                res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+              }
+            });
+          } else {
+            res.writeHead(405);
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+          }
+        } else {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('Not Found');
+        }
+      });
+      
+      server_instance.listen(port, '127.0.0.1', () => {
+        log('info', 'Airbnb MCP Server running on HTTP', {
+          version: VERSION,
+          port: port,
+          robotsRespected: !IGNORE_ROBOTS_TXT,
+          endpoint: `http://127.0.0.1:${port}/mcp`
+        });
+      });
+      
+      // Graceful shutdown handling
+      process.on('SIGINT', () => {
+        log('info', 'Received SIGINT, shutting down gracefully');
+        server_instance.close(() => process.exit(0));
+      });
+      
+      process.on('SIGTERM', () => {
+        log('info', 'Received SIGTERM, shutting down gracefully');
+        server_instance.close(() => process.exit(0));
+      });
+      
+    } else {
+      // Stdio transport (default)
+      const transport = new StdioServerTransport();
+      await server.connect(transport);
+      
+      log('info', 'Airbnb MCP Server running on stdio', {
+        version: VERSION,
+        robotsRespected: !IGNORE_ROBOTS_TXT
+      });
+      
+      // Graceful shutdown handling
+      process.on('SIGINT', () => {
+        log('info', 'Received SIGINT, shutting down gracefully');
+        process.exit(0);
+      });
+      
+      process.on('SIGTERM', () => {
+        log('info', 'Received SIGTERM, shutting down gracefully');
+        process.exit(0);
+      });
+    }
     
   } catch (error) {
     log('error', 'Failed to start server', {
