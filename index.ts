@@ -159,24 +159,24 @@ async function fetchRobotsTxt() {
 
   try {
     log('info', 'Fetching robots.txt from Airbnb');
-    
+
     // Add timeout to prevent hanging
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
-    
+
     const response = await fetch(`${BASE_URL}/robots.txt`, {
       headers: {
         "User-Agent": USER_AGENT,
       },
       signal: controller.signal
     });
-    
+
     clearTimeout(timeoutId);
-    
+
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
-    
+
     robotsTxtContent = await response.text();
     log('info', 'Successfully fetched robots.txt');
   } catch (error) {
@@ -187,7 +187,7 @@ async function fetchRobotsTxt() {
   }
 }
 
-function isPathAllowed(path: string): boolean {  
+function isPathAllowed(path: string): boolean {
   if (!robotsTxtContent) {
     return true; // If we couldn't fetch robots.txt, assume allowed
   }
@@ -195,11 +195,11 @@ function isPathAllowed(path: string): boolean {
   try {
     const robots = robotsParser(`${BASE_URL}/robots.txt`, robotsTxtContent);
     const allowed = robots.isAllowed(path, USER_AGENT);
-    
+
     if (!allowed) {
       log('warn', 'Path disallowed by robots.txt', { path, userAgent: USER_AGENT });
     }
-    
+
     return allowed;
   } catch (error) {
     log('warn', 'Error parsing robots.txt, allowing path', {
@@ -213,7 +213,7 @@ function isPathAllowed(path: string): boolean {
 async function fetchWithUserAgent(url: string, timeout: number = 30000) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
-  
+
   try {
     const response = await fetch(url, {
       headers: {
@@ -224,21 +224,21 @@ async function fetchWithUserAgent(url: string, timeout: number = 30000) {
       },
       signal: controller.signal
     });
-    
+
     clearTimeout(timeoutId);
-    
+
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
-    
+
     return response;
   } catch (error) {
     clearTimeout(timeoutId);
-    
+
     if (error instanceof Error && error.name === 'AbortError') {
       throw new Error(`Request timeout after ${timeout}ms`);
     }
-    
+
     throw error;
   }
 }
@@ -262,20 +262,20 @@ async function handleAirbnbSearch(params: any) {
 
   // Build search URL
   const searchUrl = new URL(`${BASE_URL}/s/${encodeURIComponent(location)}/homes`);
-  
+
   // Add placeId
   if (placeId) searchUrl.searchParams.append("place_id", placeId);
-  
+
   // Add query parameters
   if (checkin) searchUrl.searchParams.append("checkin", checkin);
   if (checkout) searchUrl.searchParams.append("checkout", checkout);
-  
+
   // Add guests
   const adults_int = parseInt(adults.toString());
   const children_int = parseInt(children.toString());
   const infants_int = parseInt(infants.toString());
   const pets_int = parseInt(pets.toString());
-  
+
   const totalGuests = adults_int + children_int;
   if (totalGuests > 0) {
     searchUrl.searchParams.append("adults", adults_int.toString());
@@ -283,16 +283,10 @@ async function handleAirbnbSearch(params: any) {
     searchUrl.searchParams.append("infants", infants_int.toString());
     searchUrl.searchParams.append("pets", pets_int.toString());
   }
-  
+
   // Add price range
   if (minPrice) searchUrl.searchParams.append("price_min", minPrice.toString());
   if (maxPrice) searchUrl.searchParams.append("price_max", maxPrice.toString());
-  
-  // Add room type
-  // if (roomType) {
-  //   const roomTypeParam = roomType.toLowerCase().replace(/\s+/g, '_');
-  //   searchUrl.searchParams.append("room_types[]", roomTypeParam);
-  // }
 
   // Add cursor for pagination
   if (cursor) {
@@ -358,35 +352,32 @@ async function handleAirbnbSearch(params: any) {
         }
       }
     },
-    // contextualPictures: {
-    //   picture: true
-    // }
   };
 
   try {
     log('info', 'Performing Airbnb search', { location, checkin, checkout, adults, children });
-    
+
     const response = await fetchWithUserAgent(searchUrl.toString());
     const html = await response.text();
     const $ = cheerio.load(html);
-    
+
     let staysSearchResults: any = {};
-    
+
     try {
       const scriptElement = $("#data-deferred-state-0").first();
       if (scriptElement.length === 0) {
         throw new Error("Could not find data script element - page structure may have changed");
       }
-      
+
       const scriptContent = $(scriptElement).text();
       if (!scriptContent) {
         throw new Error("Data script element is empty");
       }
-      
+
       const clientData = JSON.parse(scriptContent).niobeClientData[0][1];
       const results = clientData.data.presentation.staysSearch.results;
       cleanObject(results);
-      
+
       staysSearchResults = {
         searchResults: results.searchResults
           .map((result: any) => flattenArraysInObject(pickBySchema(result, allowSearchResultSchema)))
@@ -396,16 +387,16 @@ async function handleAirbnbSearch(params: any) {
           }),
         paginationInfo: results.paginationInfo
       }
-      
-      log('info', 'Search completed successfully', { 
-        resultCount: staysSearchResults.searchResults?.length || 0 
+
+      log('info', 'Search completed successfully', {
+        resultCount: staysSearchResults.searchResults?.length || 0
       });
     } catch (parseError) {
       log('error', 'Failed to parse search results', {
         error: parseError instanceof Error ? parseError.message : String(parseError),
         url: searchUrl.toString()
       });
-      
+
       return {
         content: [{
           type: "text",
@@ -434,7 +425,7 @@ async function handleAirbnbSearch(params: any) {
       error: error instanceof Error ? error.message : String(error),
       url: searchUrl.toString()
     });
-    
+
     return {
       content: [{
         type: "text",
@@ -463,17 +454,17 @@ async function handleAirbnbListingDetails(params: any) {
 
   // Build listing URL
   const listingUrl = new URL(`${BASE_URL}/rooms/${id}`);
-  
+
   // Add query parameters
   if (checkin) listingUrl.searchParams.append("check_in", checkin);
   if (checkout) listingUrl.searchParams.append("check_out", checkout);
-  
+
   // Add guests
   const adults_int = parseInt(adults.toString());
   const children_int = parseInt(children.toString());
   const infants_int = parseInt(infants.toString());
   const pets_int = parseInt(pets.toString());
-  
+
   const totalGuests = adults_int + children_int;
   if (totalGuests > 0) {
     listingUrl.searchParams.append("adults", adults_int.toString());
@@ -534,33 +525,32 @@ async function handleAirbnbListingDetails(params: any) {
         }
       }
     },
-    //"AVAILABLITY_CALENDAR_DEFAULT": true,
   };
 
   try {
     log('info', 'Fetching listing details', { id, checkin, checkout, adults, children });
-    
+
     const response = await fetchWithUserAgent(listingUrl.toString());
     const html = await response.text();
     const $ = cheerio.load(html);
-    
+
     let details = {};
-    
+
     try {
       const scriptElement = $("#data-deferred-state-0").first();
       if (scriptElement.length === 0) {
         throw new Error("Could not find data script element - page structure may have changed");
       }
-      
+
       const scriptContent = $(scriptElement).text();
       if (!scriptContent) {
         throw new Error("Data script element is empty");
       }
-      
+
       const clientData = JSON.parse(scriptContent).niobeClientData[0][1];
       const sections = clientData.data.presentation.stayProductDetailPage.sections.sections;
       sections.forEach((section: any) => cleanObject(section));
-      
+
       details = sections
         .filter((section: any) => allowSectionSchema.hasOwnProperty(section.sectionId))
         .map((section: any) => {
@@ -569,10 +559,10 @@ async function handleAirbnbListingDetails(params: any) {
             ...flattenArraysInObject(pickBySchema(section.section, allowSectionSchema[section.sectionId]))
           }
         });
-        
-      log('info', 'Listing details fetched successfully', { 
-        id, 
-        sectionsFound: Array.isArray(details) ? details.length : 0 
+
+      log('info', 'Listing details fetched successfully', {
+        id,
+        sectionsFound: Array.isArray(details) ? details.length : 0
       });
     } catch (parseError) {
       log('error', 'Failed to parse listing details', {
@@ -580,7 +570,7 @@ async function handleAirbnbListingDetails(params: any) {
         id,
         url: listingUrl.toString()
       });
-      
+
       return {
         content: [{
           type: "text",
@@ -610,7 +600,7 @@ async function handleAirbnbListingDetails(params: any) {
       id,
       url: listingUrl.toString()
     });
-    
+
     return {
       content: [{
         type: "text",
@@ -642,7 +632,7 @@ const server = new Server(
 function log(level: 'info' | 'warn' | 'error', message: string, data?: any) {
   const timestamp = new Date().toISOString();
   const logMessage = `[${timestamp}] [${level.toUpperCase()}] ${message}`;
-  
+
   if (data) {
     console.error(`${logMessage}:`, JSON.stringify(data, null, 2));
   } else {
@@ -664,22 +654,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const startTime = Date.now();
-  
+
   try {
     // Validate request parameters
     if (!request.params.name) {
       throw new McpError(ErrorCode.InvalidParams, "Tool name is required");
     }
-    
+
     if (!request.params.arguments) {
       throw new McpError(ErrorCode.InvalidParams, "Tool arguments are required");
     }
-    
-    log('info', 'Tool call received', { 
+
+    log('info', 'Tool call received', {
       tool: request.params.name,
-      arguments: request.params.arguments 
+      arguments: request.params.arguments
     });
-    
+
     // Ensure robots.txt is loaded
     if (!robotsTxtContent && !IGNORE_ROBOTS_TXT) {
       await fetchRobotsTxt();
@@ -703,14 +693,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           `Unknown tool: ${request.params.name}`
         );
     }
-    
+
     const duration = Date.now() - startTime;
-    log('info', 'Tool call completed', { 
-      tool: request.params.name, 
+    log('info', 'Tool call completed', {
+      tool: request.params.name,
       duration: `${duration}ms`,
-      success: !result.isError 
+      success: !result.isError
     });
-    
+
     return result;
   } catch (error) {
     const duration = Date.now() - startTime;
@@ -719,11 +709,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       duration: `${duration}ms`,
       error: error instanceof Error ? error.message : String(error)
     });
-    
+
     if (error instanceof McpError) {
       throw error;
     }
-    
+
     return {
       content: [{
         type: "text",
@@ -737,148 +727,213 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+// 개선된 HTTP 핸들러
+function createHttpHandler() {
+  return async (req, res) => {
+    const parsedUrl = new URL(req.url || '', `http://${req.headers.host}`);
+
+    // Set CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Content-Type', 'application/json');
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(200);
+      res.end();
+      return;
+    }
+
+    if (parsedUrl.pathname === '/mcp' && req.method === 'POST') {
+      let body = '';
+
+      // Set timeout for request
+      const timeout = setTimeout(() => {
+        if (!res.headersSent) {
+          res.writeHead(408);
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            error: {
+              code: -32000,
+              message: 'Request timeout'
+            }
+          }));
+        }
+      }, 60000); // 60 second timeout
+
+      req.on('data', chunk => {
+        body += chunk.toString();
+      });
+
+      req.on('end', async () => {
+        clearTimeout(timeout);
+
+        try {
+          const request = JSON.parse(body);
+          log('info', 'HTTP request received', { method: request.method });
+
+          let response = {
+            jsonrpc: '2.0',
+            id: request.id || 1
+          };
+
+          try {
+            if (request.method === 'tools/list') {
+              response.result = { tools: AIRBNB_TOOLS };
+            } else if (request.method === 'tools/call') {
+              const { name, arguments: args } = request.params;
+              let result;
+
+              switch (name) {
+                case 'airbnb_search':
+                  result = await handleAirbnbSearch(args);
+                  break;
+                case 'airbnb_listing_details':
+                  result = await handleAirbnbListingDetails(args);
+                  break;
+                default:
+                  throw new Error(`Unknown tool: ${name}`);
+              }
+
+              response.result = result;
+            } else {
+              response.error = {
+                code: -32601,
+                message: `Method not found: ${request.method}`
+              };
+            }
+          } catch (methodError) {
+            log('error', 'Method execution failed', {
+              error: methodError instanceof Error ? methodError.message : String(methodError)
+            });
+
+            response.error = {
+              code: -32000,
+              message: methodError instanceof Error ? methodError.message : String(methodError)
+            };
+          }
+
+          if (!res.headersSent) {
+            res.writeHead(200);
+            res.end(JSON.stringify(response));
+          }
+
+        } catch (parseError) {
+          log('error', 'JSON parse error', {
+            error: parseError instanceof Error ? parseError.message : String(parseError)
+          });
+
+          if (!res.headersSent) {
+            res.writeHead(400);
+            res.end(JSON.stringify({
+              jsonrpc: '2.0',
+              error: {
+                code: -32700,
+                message: 'Parse error'
+              }
+            }));
+          }
+        }
+      });
+
+      req.on('error', (error) => {
+        clearTimeout(timeout);
+        log('error', 'Request error', {
+          error: error instanceof Error ? error.message : String(error)
+        });
+
+        if (!res.headersSent) {
+          res.writeHead(500);
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            error: {
+              code: -32000,
+              message: 'Internal error'
+            }
+          }));
+        }
+      });
+
+    } else if (parsedUrl.pathname === '/health' && req.method === 'GET') {
+      res.writeHead(200);
+      res.end(JSON.stringify({
+        status: 'ok',
+        version: VERSION,
+        timestamp: new Date().toISOString()
+      }));
+    } else {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'Not Found' }));
+    }
+  };
+}
+
 async function runServer() {
   try {
     // Initialize robots.txt on startup
     await fetchRobotsTxt();
-    
+
     // Check if HTTP mode is requested
     const httpMode = process.argv.includes('--http') || process.env.MCP_HTTP_MODE === 'true';
     const port = parseInt(process.env.MCP_PORT || '8003');
-    
+
     if (httpMode) {
-      // HTTP transport using Express-like approach
+      // HTTP transport
       const http = await import('http');
-      const url = await import('url');
-      
-      const server_instance = http.createServer(async (req, res) => {
-        const parsedUrl = url.parse(req.url || '', true);
-        
-        if (parsedUrl.pathname === '/mcp') {
-          // Set CORS headers
-          res.setHeader('Access-Control-Allow-Origin', '*');
-          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-          res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-          res.setHeader('Content-Type', 'application/json');
-          
-          if (req.method === 'OPTIONS') {
-            res.writeHead(200);
-            res.end();
-            return;
-          }
-          
-          if (req.method === 'POST') {
-            let body = '';
-            req.on('data', chunk => {
-              body += chunk.toString();
-            });
-            
-            req.on('end', async () => {
-              try {
-                const request = JSON.parse(body);
-                
-                // Handle MCP requests
-                if (request.method === 'tools/list') {
-                  const response = {
-                    jsonrpc: '2.0',
-                    id: request.id,
-                    result: {
-                      tools: AIRBNB_TOOLS
-                    }
-                  };
-                  res.writeHead(200);
-                  res.end(JSON.stringify(response));
-                } else if (request.method === 'tools/call') {
-                  const { name, arguments: args } = request.params;
-                  let result;
-                  
-                  switch (name) {
-                    case 'airbnb_search':
-                      result = await handleAirbnbSearch(args);
-                      break;
-                    case 'airbnb_listing_details':
-                      result = await handleAirbnbListingDetails(args);
-                      break;
-                    default:
-                      result = {
-                        content: [{
-                          type: 'text',
-                          text: JSON.stringify({
-                            error: `Unknown tool: ${name}`
-                          })
-                        }],
-                        isError: true
-                      };
-                  }
-                  
-                  const response = {
-                    jsonrpc: '2.0',
-                    id: request.id,
-                    result: result
-                  };
-                  res.writeHead(200);
-                  res.end(JSON.stringify(response));
-                } else {
-                  res.writeHead(400);
-                  res.end(JSON.stringify({ error: 'Unknown method' }));
-                }
-              } catch (error) {
-                res.writeHead(500);
-                res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
-              }
-            });
-          } else {
-            res.writeHead(405);
-            res.end(JSON.stringify({ error: 'Method not allowed' }));
-          }
-        } else {
-          res.writeHead(404, { 'Content-Type': 'text/plain' });
-          res.end('Not Found');
-        }
-      });
-      
+
+      const server_instance = http.createServer(createHttpHandler());
+
       server_instance.listen(port, '127.0.0.1', () => {
         log('info', 'Airbnb MCP Server running on HTTP', {
           version: VERSION,
           port: port,
           robotsRespected: !IGNORE_ROBOTS_TXT,
-          endpoint: `http://127.0.0.1:${port}/mcp`
+          endpoint: `http://127.0.0.1:${port}/mcp`,
+          health: `http://127.0.0.1:${port}/health`
         });
       });
-      
+
+      // Handle server errors
+      server_instance.on('error', (error) => {
+        log('error', 'HTTP server error', {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+
       // Graceful shutdown handling
-      process.on('SIGINT', () => {
-        log('info', 'Received SIGINT, shutting down gracefully');
-        server_instance.close(() => process.exit(0));
-      });
-      
-      process.on('SIGTERM', () => {
-        log('info', 'Received SIGTERM, shutting down gracefully');
-        server_instance.close(() => process.exit(0));
-      });
-      
+      const shutdown = (signal) => {
+        log('info', `Received ${signal}, shutting down gracefully`);
+        server_instance.close(() => {
+          log('info', 'Server closed');
+          process.exit(0);
+        });
+      };
+
+      process.on('SIGINT', () => shutdown('SIGINT'));
+      process.on('SIGTERM', () => shutdown('SIGTERM'));
+
     } else {
       // Stdio transport (default)
       const transport = new StdioServerTransport();
       await server.connect(transport);
-      
+
       log('info', 'Airbnb MCP Server running on stdio', {
         version: VERSION,
         robotsRespected: !IGNORE_ROBOTS_TXT
       });
-      
+
       // Graceful shutdown handling
       process.on('SIGINT', () => {
         log('info', 'Received SIGINT, shutting down gracefully');
         process.exit(0);
       });
-      
+
       process.on('SIGTERM', () => {
         log('info', 'Received SIGTERM, shutting down gracefully');
         process.exit(0);
       });
     }
-    
+
   } catch (error) {
     log('error', 'Failed to start server', {
       error: error instanceof Error ? error.message : String(error)
